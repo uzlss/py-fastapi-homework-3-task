@@ -45,20 +45,25 @@ async def register_user(
     db: AsyncSession = Depends(get_db),
 ):
     try:
-        if await db.scalar(
-            select(UserModel).where(UserModel.email == payload.email)
-        ):
+        # check for existing email
+        if await db.scalar(select(UserModel).where(UserModel.email == payload.email)):
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=f"A user with this email {payload.email} already exists.",
             )
 
+        # load default USER group
         default_group = await db.scalar(
-            select(UserGroupModel).where(
-                UserGroupModel.name == UserGroupEnum.USER
-            )
+            select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER)
         )
+        # ensure it actually exists
+        if default_group is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Default user group not configured.",
+            )
 
+        # create new user
         new_user = UserModel(
             email=payload.email,
             _hashed_password=hash_password(payload.password),
@@ -66,8 +71,11 @@ async def register_user(
         )
         db.add(new_user)
         await db.flush()
+
+        # create activation token
         db.add(ActivationTokenModel(user_id=new_user.id))
         await db.commit()
+
     except SQLAlchemyError:
         await db.rollback()
         raise HTTPException(
