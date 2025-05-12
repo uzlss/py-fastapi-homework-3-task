@@ -8,8 +8,8 @@ from schemas.movies import (
 from schemas.accounts import (
     UserRegistrationRequestSchema,
     UserRegistrationResponseSchema,
-    # UserActivationRequestSchema,
-    # MessageResponseSchema,
+    UserActivationRequestSchema,
+    MessageResponseSchema,
     # PasswordResetRequestSchema,
     # PasswordResetCompleteRequestSchema,
     # UserLoginResponseSchema,

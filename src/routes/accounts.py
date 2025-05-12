@@ -21,6 +21,8 @@ from exceptions import BaseSecurityError
 from schemas import (
     UserRegistrationRequestSchema,
     UserRegistrationResponseSchema,
+    MessageResponseSchema,
+    UserActivationRequestSchema,
 )
 from security.interfaces import JWTAuthManagerInterface
 from security.passwords import hash_password
@@ -31,7 +33,7 @@ router = APIRouter()
 @router.post(
     "/register/",
     status_code=status.HTTP_201_CREATED,
-    response_model=UserRegistrationResponseSchema
+    response_model=UserRegistrationResponseSchema,
 )
 async def register_user(
     payload: UserRegistrationRequestSchema,
@@ -44,17 +46,19 @@ async def register_user(
         if existing:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
-                detail=f"A user with email {payload.email} already exists."
+                detail=f"A user with email {payload.email} already exists.",
             )
 
         default_group = await db.scalar(
-            select(UserGroupModel).where(UserGroupModel.name == UserGroupEnum.USER)
+            select(UserGroupModel).where(
+                UserGroupModel.name == UserGroupEnum.USER
+            )
         )
 
         new_user = UserModel(
             email=payload.email,
             _hashed_password=hash_password(payload.password),
-            group=default_group
+            group=default_group,
         )
         db.add(new_user)
         await db.flush()
@@ -66,21 +70,61 @@ async def register_user(
 
 
 @router.post(
-    "/register/",
-    status_code=status.HTTP_201_CREATED,
-    response_model=UserRegistrationResponseSchema,
+    "/activate/",
+    response_model=MessageResponseSchema,
+    status_code=status.HTTP_200_OK,
 )
-async def register_user(
-    payload: UserRegistrationRequestSchema,
+async def activate_user(
+    payload: UserActivationRequestSchema,
     db: AsyncSession = Depends(get_db),
 ):
-    if await db.scalar(
-        select(UserModel).where(UserModel.email == payload.email)
-    ):
+    result = await db.execute(
+        select(ActivationTokenModel)
+        .options(joinedload(ActivationTokenModel.user))
+        .join(ActivationTokenModel.user)
+        .where(
+            UserModel.email == payload.email,
+            ActivationTokenModel.token == payload.token,
+        )
+    )
+    token_rec = result.scalar_one_or_none()
+    if not token_rec or token_rec.expires_at.replace(
+        tzinfo=timezone.utc
+    ) < datetime.now(timezone.utc):
+        if token_rec:
+            await db.execute(
+                delete(ActivationTokenModel).where(
+                    ActivationTokenModel.id == token_rec.id
+                )
+            )
+            await db.commit()
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"A user with email {payload.email} already exists.",
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired activation token.",
         )
 
-    user = await create_user(db, payload)
-    return user
+    user = token_rec.user
+    if user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User account is already active.",
+        )
+
+    try:
+        user.is_active = True
+        await db.execute(
+            delete(ActivationTokenModel).where(
+                ActivationTokenModel.id == token_rec.id
+            )
+        )
+        await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while activating the account.",
+        )
+
+    return MessageResponseSchema(
+        message="User account activated successfully."
+    )
