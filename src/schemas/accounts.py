@@ -33,3 +33,14 @@ class UserActivationRequestSchema(UserBase):
 
 class MessageResponseSchema(BaseModel):
     message: str
+
+
+class PasswordResetRequestSchema(UserBase):
+    pass
+
+
+class PasswordResetCompleteRequestSchema(
+    UserRegistrationRequestSchema,
+    UserActivationRequestSchema
+):
+    pass

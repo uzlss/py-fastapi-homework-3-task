@@ -23,6 +23,8 @@ from schemas import (
     UserRegistrationResponseSchema,
     MessageResponseSchema,
     UserActivationRequestSchema,
+    PasswordResetRequestSchema,
+    PasswordResetCompleteRequestSchema,
 )
 from security.interfaces import JWTAuthManagerInterface
 from security.passwords import hash_password
@@ -127,4 +129,98 @@ async def activate_user(
 
     return MessageResponseSchema(
         message="User account activated successfully."
+    )
+
+
+@router.post(
+    "/password-reset/request/",
+    response_model=MessageResponseSchema,
+    status_code=status.HTTP_200_OK,
+)
+async def request_password_reset(
+    data: PasswordResetRequestSchema,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        result = await db.execute(
+            select(UserModel).where(UserModel.email == data.email)
+        )
+        user = result.scalar_one_or_none()
+        if user and user.is_active:
+            await db.execute(
+                delete(PasswordResetTokenModel).where(
+                    PasswordResetTokenModel.user_id == user.id
+                )
+            )
+            reset_token = PasswordResetTokenModel(user_id=user.id)
+            db.add(reset_token)
+            await db.commit()
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while processing password reset request.",
+        )
+    return MessageResponseSchema(
+        message="If you are registered, you will receive an email with instructions."
+    )
+
+
+@router.post(
+    "/password-reset/complete/",
+    response_model=MessageResponseSchema,
+    status_code=status.HTTP_200_OK,
+)
+async def complete_password_reset(
+    data: PasswordResetCompleteRequestSchema,
+    db: AsyncSession = Depends(get_db),
+):
+    try:
+        result = await db.execute(
+            select(UserModel).where(UserModel.email == data.email)
+        )
+        user = result.scalar_one_or_none()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid token or email.",
+            )
+        token_q = select(PasswordResetTokenModel).where(
+            PasswordResetTokenModel.user_id == user.id,
+            PasswordResetTokenModel.token == data.token,
+        )
+        token_entry = (await db.execute(token_q)).scalar_one_or_none()
+        # Validate existence and expiration
+        if not token_entry or token_entry.expires_at.replace(
+            tzinfo=timezone.utc
+        ) < datetime.now(timezone.utc):
+            if token_entry:
+                await db.execute(
+                    delete(PasswordResetTokenModel).where(
+                        PasswordResetTokenModel.id == token_entry.id
+                    )
+                )
+                await db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid token or email.",
+            )
+        # Hash new password and delete token
+        user._hashed_password = hash_password(data.password)
+        await db.execute(
+            delete(PasswordResetTokenModel).where(
+                PasswordResetTokenModel.id == token_entry.id
+            )
+        )
+        await db.commit()
+    except HTTPException:
+        raise
+    except SQLAlchemyError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while resetting the password.",
+        )
+    return MessageResponseSchema(
+        message="Your password has been reset successfully."
     )
